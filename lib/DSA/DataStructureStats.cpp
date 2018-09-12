@@ -114,6 +114,9 @@ static bool isIndirectCallee(Value *V) {
   if (GlobalAlias *GA = dyn_cast<GlobalAlias>(V)) {
     return isIndirectCallee(GA->getAliasee());
   }
+  if (JumpTrampoline *JT = dyn_cast<JumpTrampoline>(V)) {
+    return isIndirectCallee(JT->getTarget());
+  }
   return true;
 }
 

@@ -886,8 +886,6 @@ void FuncTransform::visitCallSite(CallSite& CS) {
     CalleeGraph = Graphs.getDSGraph(*CF);
   } else {
     DEBUG(errs() << "  Handling indirect call: " << *TheCall << "\n");
-    DSGraph *G =  Graphs.getGlobalsGraph();
-    DSGraph::ScalarMapTy& SM = G->getScalarMap();
 
     // Here we fill in CF with one of the possible called functions.  Because we
     // merged together all of the arguments to all of the functions in the
@@ -912,62 +910,31 @@ void FuncTransform::visitCallSite(CallSite& CS) {
 
     CallSite OrigCS(OrigInst);
     DSCallGraph::callee_iterator I = callGraph.callee_begin(OrigCS);
+    size_t MaxArgs = 0;
     for (; I != callGraph.callee_end(OrigCS); ++I) {
-      for(DSCallGraph::scc_iterator sccii = callGraph.scc_begin(*I),
-                           sccee = callGraph.scc_end(*I); sccii != sccee; ++sccii){
-        if(SM.find(SM.getLeaderForGlobal(*sccii)) == SM.end())
-          continue;
-        //
-        // Get the information for this function.  Since this is coming from
-        // DSA, it should be an original function.
-        //
-        // This call site calls a function, that is not defined in this module
-        if (!(Graphs.hasDSGraph(**sccii))) return;
+      //
+      // Get the information for this function.  Since this is coming from
+      // DSA, it should be an original function.
+      //
+      // This call site calls a function, that is not defined in this module
+      if (!(Graphs.hasDSGraph(**I))) return;
 
-        // For all other cases Func Info must exist.
-        PAInfo.getFuncInfo(**sccii);
+      // For all other cases Func Info must exist.
+      PAInfo.getFuncInfo(**I);
 
-        //
-        // If this target takes more DSNodes than the last one we found, then
-        // make *this* target our canonical target.
-        //
-        CF = *sccii;
-        break;
+      //
+      // If this target takes more DSNodes than the last one we found, then
+      // make *this* target our canonical target.
+      //
+      std::vector<DSNodeHandle> Args;
+      Graphs.getDSGraph(**I)->getFunctionArgumentsForCall(*I, Args);
+      if (Args.size() > MaxArgs) {
+        CF = *I;
       }
     }
-    if(!CF){
-    const Function *F1 = OrigInst->getParent()->getParent();
-    F1 = callGraph.sccLeader(&*F1);
 
-    for(DSCallGraph::scc_iterator sccii = callGraph.scc_begin(F1),
-                           sccee = callGraph.scc_end(F1); sccii != sccee; ++sccii){
-        if(SM.find(SM.getLeaderForGlobal(*sccii)) == SM.end())
-          continue;
-        //
-        // Get the information for this function.  Since this is coming from DSA,
-        // it should be an original function.
-        //
-        // This call site calls a function, that is not defined in this module
-        if (!(Graphs.hasDSGraph(**sccii))) return;
-        // For all other cases Func Info must exist.
-        PAInfo.getFuncInfo(**sccii);
-
-        //
-        // If this target takes more DSNodes than the last one we found, then
-        // make *this* target our canonical target.
-        //
-        CF = *sccii;
-      }
-    }
-    
     // Assuming the call graph is always correct. And if the call graph reports,
     // no callees, we can assume that it is right.
-    //
-    // If we didn't find the callee in the constructed call graph, try
-    // checking in the DSNode itself.
-    // This isn't ideal as it means that this call site didn't have inlining
-    // happen.
-    //
 
     //
     // If we still haven't been able to find a target function of the call site
@@ -1035,7 +1002,7 @@ void FuncTransform::visitCallSite(CallSite& CS) {
   CallSite::arg_iterator AE = CS.arg_end();
   for ( ; FAI != E && AI != AE; ++FAI, ++AI)
     if (!isa<Constant>(*AI)) {
-      DSGraph::computeNodeMapping(CalleeGraph->getNodeForValue(FAI),
+      DSGraph::computeNodeMapping(CalleeGraph->getNodeForValue(&*FAI),
                                   getDSNodeHFor(*AI), NodeMapping, false);
     }
 

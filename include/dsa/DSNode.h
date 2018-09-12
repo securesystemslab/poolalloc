@@ -17,6 +17,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/ilist_node.h"
 #include "llvm/ADT/ilist.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "dsa/svset.h"
@@ -85,6 +86,10 @@ private:
   ///
   svset<const GlobalValue*> Globals;
 
+  StringSet<> Reasons;
+
+  DenseSet<const Value*> Allocations;
+
   void operator=(const DSNode &); // DO NOT IMPLEMENT
   DSNode(const DSNode &);         // DO NOT IMPLEMENT
 public:
@@ -112,8 +117,11 @@ public:
     VAStartNode     = 1 << 14,  // This node is from a vastart call
 
     //#ifndef NDEBUG
-    DeadNode        = 1 << 15,   // This node is dead and should not be pointed to
+    DeadNode        = 1 << 15,  // This node is dead and should not be pointed to
     //#endif
+
+    DoNotEncrypt = 1 << 17,          // Do not randomize data represented by this node.
+    DoNotEncryptReachable = 1 << 18, // Do not randomize any data reachable from this node.
 
     Composition = AllocaNode | HeapNode | GlobalNode | UnknownNode
   };
@@ -123,7 +131,7 @@ public:
   /// with a value of 0 for their NodeType.
   ///
 private:
-  unsigned short NodeType;
+  unsigned int NodeType;
 public:
 
   /// DSNode ctor - Create a node of the specified type, inserting it into the
@@ -307,6 +315,12 @@ public:
 
   void addFunction(const Function* F);
 
+  void addReason(StringRef Reason) {
+    Reasons.insert(Reason);
+  }
+
+  void addAllocation(const Value *V);
+
   /// removeGlobal - Remove the specified global that is explicitly in the
   /// globals list.
   void removeGlobal(const GlobalValue *GV);
@@ -316,6 +330,27 @@ public:
 
   bool isEmptyGlobals() const { return Globals.empty(); }
   unsigned numGlobals() const { return Globals.size(); }
+
+  void mergeReasons(const DSNode& RHS);
+  void clearReasons() { Reasons.clear(); }
+
+  const StringSet<> &getReasons() const { return Reasons; }
+  StringSet<> &getReasons() { return Reasons; }
+
+  void mergeAllocations(const DSNode &RHS);
+  void clearAllocations() { Allocations.clear(); }
+
+  unsigned numAllocations() const { return Allocations.size(); }
+
+  void mergeMetaData(const DSNode &RHS) {
+    mergeReasons(RHS);
+    mergeAllocations(RHS);
+  }
+
+  void clearMetaData() {
+    clearReasons();
+    clearAllocations();
+  }
 
   /// addFullGlobalSet - Compute the full set of global values that are
   /// represented by this node.  Unlike getGlobalsList(), this requires fair
@@ -387,6 +422,8 @@ public:
   bool isIntToPtrNode()   const { return NodeType & IntToPtrNode;  }
   bool isPtrToIntNode()   const { return NodeType & PtrToIntNode;  }
   bool isVAStartNode()    const { return NodeType & VAStartNode;   }
+  bool isDoNotEncryptNode() const { return NodeType & DoNotEncrypt;}
+  bool isDoNotEncryptReachableNode() const { return NodeType & DoNotEncryptReachable; }
 
   DSNode* setAllocaMarker()     { NodeType |= AllocaNode;     return this; }
   DSNode* setHeapMarker()       { NodeType |= HeapNode;       return this; }
@@ -403,6 +440,21 @@ public:
   DSNode* setIntToPtrMarker()   { NodeType |= IntToPtrNode;   return this; }
   DSNode* setPtrToIntMarker()   { NodeType |= PtrToIntNode;   return this; }
   DSNode* setVAStartMarker()    { NodeType |= VAStartNode;    return this; }
+  DSNode* setDoNotEncryptMarker(StringRef Reason = StringRef()) {
+    NodeType |= DoNotEncrypt;
+    if (!Reason.empty()) {
+      addReason(Reason);
+    }
+    return this;
+  }
+
+  DSNode* setDoNotEncryptReachableMarker(StringRef Reason = StringRef()) {
+    NodeType |= DoNotEncryptReachable;
+    if (!Reason.empty()) {
+      addReason(Reason);
+    }
+    return this;
+  }
 
   void makeNodeDead() {
     Globals.clear();

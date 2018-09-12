@@ -358,10 +358,10 @@ bool TypeChecks::runOnModule(Module &M) {
           // replace the use specified in ReplaceWorklist.
           //
           if(isa<ConstantArray>(C)) {
-              C->replaceUsesOfWithOnConstant(F, CNew, ReplaceWorklist[0]);
+              C->handleOperandChange(F, CNew, ReplaceWorklist[0]);
           } else {
             for (unsigned index = 0; index < ReplaceWorklist.size(); ++index) {
-              C->replaceUsesOfWithOnConstant(F, CNew, ReplaceWorklist[index]);
+              C->handleOperandChange(F, CNew, ReplaceWorklist[index]);
             }
           }
           continue;
@@ -579,7 +579,7 @@ void TypeChecks::optimizeChecks(Module &M) {
 
         if(hoist) {
           CI->removeFromParent();
-          L->getLoopPreheader()->getInstList().insert(L->getLoopPreheader()->getTerminator(), CI);
+          L->getLoopPreheader()->getInstList().insert(L->getLoopPreheader()->getTerminator()->getIterator(), CI);
         }
       }
     }
@@ -678,7 +678,7 @@ bool TypeChecks::visitAddressTakenFunction(Module &M, Function &F) {
       NI!=NewF->arg_end(); ++II, ++NI) {
     // Each new argument maps to the argument in the old function
     // For each of these also copy attributes
-    ValueMap[II] = NI;
+    ValueMap[&*II] = &*NI;
     NI->setName(II->getName());
     NI->addAttr(F.getAttributes().getParamAttributes(II->getArgNo()+1));
   }
@@ -844,7 +844,7 @@ bool TypeChecks::visitInternalVarArgFunction(Module &M, Function &F) {
       NI!=NewF->arg_end(); ++II, ++NI) {
     // Each new argument maps to the argument in the old function
     // For each of these also copy attributes
-    ValueMap[II] = NI;
+    ValueMap[&*II] = &*NI;
     NI->setName(II->getName());
     NI->addAttr(F.getAttributes().getParamAttributes(II->getArgNo()+1));
   }
@@ -867,7 +867,7 @@ bool TypeChecks::visitInternalVarArgFunction(Module &M, Function &F) {
   // Subtract the number of initial arguments
   Constant *InitialArgs = ConstantInt::get(Int64Ty, F.arg_size());
   Instruction *NewValue = BinaryOperator::Create(BinaryOperator::Sub,
-                                                 NII,
+                                                 &*NII,
                                                  InitialArgs,
                                                  "varargs",
                                                  &*InsPt);
@@ -878,7 +878,7 @@ bool TypeChecks::visitInternalVarArgFunction(Module &M, Function &F) {
   Value *Idx[1];
   Idx[0] = InitialArgs;
   // For each vararg argument, also add its type information
-  GetElementPtrInst *GEP = GetElementPtrInst::CreateInBounds(NII,Idx, "", &*InsPt);
+  GetElementPtrInst *GEP = GetElementPtrInst::CreateInBounds(&*NII, Idx, "", &*InsPt);
   // visit all VAStarts and initialize the counter
   for (Function::iterator B = NewF->begin(), FE = NewF->end(); B != FE; ++B) {
     for (BasicBlock::iterator I = B->begin(), BE = B->end(); I != BE;I++) {
@@ -1046,7 +1046,7 @@ bool TypeChecks::visitInternalByValFunction(Module &M, Function &F) {
     AllocaInst *AI = new AllocaInst(ETy, "", InsertBefore);
     // Do this before adding the load/store pair, so that those uses are not replaced.
     I->replaceAllUsesWith(AI);
-    LoadInst *LI = new LoadInst(I, "", InsertBefore);
+    LoadInst *LI = new LoadInst(&*I, "", InsertBefore);
     new StoreInst(LI, AI, InsertBefore);
   }
 
@@ -1177,7 +1177,7 @@ bool TypeChecks::visitExternalByValFunction(Module &M, Function &F) {
       Type * ET = PT->getElementType();
       Value * AllocSize = ConstantInt::get(Int64Ty, TD->getTypeAllocSize(ET));
       Instruction * InsertPt = &(F.getEntryBlock().front());
-      Value *BCI = castTo(I, VoidPtrTy, "", InsertPt);
+      Value *BCI = castTo(&*I, VoidPtrTy, "", InsertPt);
       std::vector<Value *> Args;
       Args.push_back(BCI);
       Args.push_back(AllocSize);
@@ -1263,7 +1263,7 @@ bool TypeChecks::initShadow(Module &M) {
        I->getName().str() == "optind" ||
        I->getName().str() == "optarg") {
       // assume initialized
-      Value *BCI = castTo(I, VoidPtrTy, "", InsertPt);
+      Value *BCI = castTo(&*I, VoidPtrTy, "", InsertPt);
       std::vector<Value *> Args;
       Args.push_back(BCI);
       Args.push_back(getSizeConstant(I->getType()->getElementType()));
@@ -1343,10 +1343,10 @@ bool TypeChecks::initShadow(Module &M) {
       return false;
 
     Function::arg_iterator AI = MainFunc.arg_begin();
-    Value *Argc = AI;
-    Value *Argv = ++AI;
+    Value *Argc = &*AI;
+    Value *Argv = &*++AI;
 
-    Instruction *InsertPt = MainFunc.front().begin();
+    Instruction *InsertPt = &*MainFunc.front().begin();
     std::vector<Value *> fargs;
     fargs.push_back (Argc);
     fargs.push_back (Argv);
@@ -1355,7 +1355,7 @@ bool TypeChecks::initShadow(Module &M) {
     if(MainFunc.arg_size() < 3)
       return true;
 
-    Value *Envp = ++AI;
+    Value *Envp = &*++AI;
     std::vector<Value*> Args;
     Args.push_back(Envp);
     CallInst::Create(RegisterEnvp, Args, "", InsertPt);
@@ -1551,7 +1551,7 @@ bool TypeChecks::visitCallSite(Module &M, CallSite CS) {
       CallInst *CI = CallInst::Create(F, Args);
       Instruction *InsertPt = I;  
       if (InvokeInst *II = dyn_cast<InvokeInst>(InsertPt)) {
-        InsertPt = II->getNormalDest()->begin();
+        InsertPt = &*II->getNormalDest()->begin();
         while (isa<PHINode>(InsertPt))
           ++InsertPt;
       } else
@@ -1566,7 +1566,7 @@ bool TypeChecks::visitCallSite(Module &M, CallSite CS) {
       CallInst *CI = CallInst::Create(F, Args);
       Instruction *InsertPt = I;  
       if (InvokeInst *II = dyn_cast<InvokeInst>(InsertPt)) {
-        InsertPt = II->getNormalDest()->begin();
+        InsertPt = &*II->getNormalDest()->begin();
         while (isa<PHINode>(InsertPt))
           ++InsertPt;
       } else

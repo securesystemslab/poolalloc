@@ -52,7 +52,7 @@ CompleteBUDataStructures::runOnModule (Module &M) {
 
   for (Module::iterator F = M.begin(); F != M.end(); ++F) {
     if (!(F->isDeclaration())){
-      getOrCreateGraph(F);
+      getOrCreateGraph(&*F);
     }
   }
 
@@ -60,7 +60,7 @@ CompleteBUDataStructures::runOnModule (Module &M) {
   formGlobalECs();
   for (Module::iterator F = M.begin(); F != M.end(); ++F) {
     if (!(F->isDeclaration())) {
-      if (DSGraph * Graph = getOrCreateGraph(F)) {
+      if (DSGraph * Graph = getOrCreateGraph(&*F)) {
         cloneIntoGlobals(Graph, DSGraph::DontCloneCallNodes |
                         DSGraph::DontCloneAuxCallNodes |
                         DSGraph::StripAllocaBit);
@@ -70,7 +70,7 @@ CompleteBUDataStructures::runOnModule (Module &M) {
 
   for (Module::iterator F = M.begin(); F != M.end(); ++F) {
     if (!(F->isDeclaration())) {
-      if (DSGraph * Graph = getOrCreateGraph(F)) {
+      if (DSGraph * Graph = getOrCreateGraph(&*F)) {
         cloneGlobalsInto(Graph, DSGraph::DontCloneCallNodes |
                         DSGraph::DontCloneAuxCallNodes);
       }
@@ -107,25 +107,17 @@ CompleteBUDataStructures::buildIndirectFunctionSets (void) {
 
   // Merge nodes in the global graph for these functions
   for (DSCallGraph::callee_key_iterator ii = callgraph.key_begin(),
-       ee = callgraph.key_end(); ii != ee; ++ii) {
+         ee = callgraph.key_end(); ii != ee; ++ii) {
 
 #ifndef NDEBUG
     // --Verify that for every callee of an indirect function call
     //   we have an entry in the GlobalsGraph
-
-    // If any function in an SCC is a callee of an indirect function
-    // call, the DScallgraph contains the leader of the SCC as the
-    // callee of the indirect call.
-    // The leasder of the SCC may not have an entry in the Globals
-    // Graph, but at least one of the functions in the SCC
-    // should have an entry in the GlobalsGraph
-
     Value *CalledValue = (*ii).getCalledValue()->stripPointerCasts();
-    
+
     bool isIndirect = (!isa<Function>(CalledValue));
     if (isIndirect) {
       DSCallGraph::callee_iterator csii = callgraph.callee_begin(*ii),
-                                   csee = callgraph.callee_end(*ii);
+        csee = callgraph.callee_end(*ii);
 
       for (; csii != csee; ++csii) {
         //
@@ -135,15 +127,9 @@ CompleteBUDataStructures::buildIndirectFunctionSets (void) {
         //
         const Function * F = *csii;
         if (!(F->isDeclaration())){
-          DSCallGraph::scc_iterator sccii = callgraph.scc_begin(F),
-                                    sccee = callgraph.scc_end(F);
-          bool flag = false;
-          for(; sccii != sccee; ++sccii) {
-            flag |= SM.count(SM.getLeaderForGlobal(*sccii));
-          } 
-          assert (flag &&
+          assert (SM.count(SM.getLeaderForGlobal(F)) &&
                   "Indirect function callee not in globals?");
-         }
+        }
       }
     }
 #endif
@@ -167,52 +153,18 @@ CompleteBUDataStructures::buildIndirectFunctionSets (void) {
     // this code is careful to handle callees not existing in the globals graph
     // In other words what we have here should be correct, but might be overkill
     // that we can trim down later as needed.
-    
-    DSNodeHandle calleesNH;
-   
-    // When we build SCCs we remove any calls that are to functions in the 
-    // same SCC. Hence, for every indirect call site we must assume that it
-    // might call functions in its function's SCC that are address taken.
-    const Function *F1 = (*ii).getInstruction()->getParent()->getParent();
-    F1 = callgraph.sccLeader(&*F1);
 
-    DSCallGraph::scc_iterator sccii = callgraph.scc_begin(F1),
-                                sccee = callgraph.scc_end(F1);
-    for(;sccii != sccee; ++sccii) {
-      DSGraph::ScalarMapTy::const_iterator I = SM.find(SM.getLeaderForGlobal(*sccii));
-      if (I != SM.end()) {
-        calleesNH.mergeWith(I->second);
-      }
-    }
+    // We get all the callees, and then merge them into a single node. This NH
+    // starts off empty, but ends up merging them all together
+    DSNodeHandle calleesNH;
 
     DSCallGraph::callee_iterator csi = callgraph.callee_begin(*ii),
-            cse = callgraph.callee_end(*ii);
-
-
-    // We get all the callees, and then for all functions in that SCC, find the
-    // ones that have entries in the GlobalsGraph.
-
-    // We merge all the functions in the SCC that have entries, and then move
-    // on to the next callee and repeat.
-
-    // If an SCC has functions that have entries in the GlobalsGraph, and are
-    // targets of an indirect function call site, they will be merged.
-
-    // However, if an SCC has functions, that have entries in the GlobalsGraph,
-    // bur are not the targets of an indirect function call site, they will not
-    // be merged by CBU.
-
-    // This NH starts off empty, but ends up merging them all together
-
+      cse = callgraph.callee_end(*ii);
     while(csi != cse) {
       const Function *F = *csi;
-      DSCallGraph::scc_iterator sccii = callgraph.scc_begin(F),
-                                sccee = callgraph.scc_end(F);
-      for(;sccii != sccee; ++sccii) {
-        DSGraph::ScalarMapTy::const_iterator I = SM.find(SM.getLeaderForGlobal(*sccii));
-        if (I != SM.end()) {
-          calleesNH.mergeWith(I->second);
-        }
+      DSGraph::ScalarMapTy::const_iterator I = SM.find(SM.getLeaderForGlobal(F));
+      if(I != SM.end()) {
+        calleesNH.mergeWith(I->second);
       }
       ++csi;
     }

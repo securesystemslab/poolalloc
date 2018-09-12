@@ -292,7 +292,7 @@ GetNodesReachableFromGlobals (DSGraph* G,
     //
     DSGraph::node_iterator ni = G->node_begin();
     for (; ni != G->node_end(); ++ni) {
-      DSNode * N = ni;
+      DSNode * N = &*ni;
       if (NodesFromGlobals.count (NodeMap[N].getNode()))
         NodesFromGlobals.insert (N);
     }
@@ -415,7 +415,7 @@ Heuristic::getLocalPoolNodes (const Function & F, DSNodeList_t & Nodes) {
        I != E;
        ++I){
     // Get the DSNode and, if applicable, its mirror in the globals graph
-    DSNode * N   = I;
+    DSNode * N  = &*I;
     DSNode * GGN = GlobalsGraphNodeMapping[N].getNode();
 
     //
@@ -479,7 +479,7 @@ AllButUnreachableFromMemoryHeuristic::AssignToPools (
   std::set<const DSNode*> ReachableFromMemory;
   for (DSGraph::node_iterator I = G->node_begin(), E = G->node_end();
        I != E; ++I) {
-    DSNode *N = I;
+    DSNode *N = &*I;
 #if 0
     //
     // Ignore nodes that are just globals and not arrays.
@@ -854,7 +854,7 @@ getDynamicallyNullPool(BasicBlock::iterator I) {
   }
   while (isa<AllocaInst>(I)) ++I;
 
-  return new LoadInst(NullGlobal, "nullpd", I);
+  return new LoadInst(NullGlobal, "nullpd", &*I);
 }
 
 // HackFunctionBody - This method is called on every transformed function body.

@@ -120,7 +120,7 @@ AllHeapNodesHeuristic::GetNodesReachableFromGlobals (DSGraph* G,
 
     DSGraph::node_iterator ni = G->node_begin();
     for (; ni != G->node_end(); ++ni) {
-      DSNode * N = ni;
+      DSNode * N = &*ni;
       if (NodesFromGlobals.count (NodeMap[N].getNode()))
         NodesFromGlobals.insert (N);
     }
@@ -177,7 +177,7 @@ AllHeapNodesHeuristic::findGlobalPoolNodes (DSNodeSet_t & Nodes) {
       //
       DSGraph::node_iterator ni = G->node_begin();
       for (; ni != G->node_end(); ++ni) {
-        DSNode * N = ni;
+        DSNode * N = &*ni;
         DSNode * GGN = NodeMap[N].getNode();
         
         //assert (!GGN || GlobalHeapNodes.count (GGN));

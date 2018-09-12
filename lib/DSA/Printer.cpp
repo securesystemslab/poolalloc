@@ -117,7 +117,11 @@ static std::string getCaption(const DSNode *N, const DSGraph *G) {
 
   for (DSNode::globals_iterator i = N->globals_begin(), e = N->globals_end(); 
        i != e; ++i) {
-    (*i)->print(OS);
+    if (const Function *F = dyn_cast<Function>(*i)) {
+      OS << "Function: " << Function::getRealLinkageName(F->getName()) << '\n';
+    } else {
+      (*i)->print(OS);
+    }
 
     // Figure out how many globals are equivalent to this one.
     if (GlobalECs) {
@@ -126,7 +130,7 @@ static std::string getCaption(const DSNode *N, const DSGraph *G) {
       if (I != GlobalECs->end()) {
         unsigned NumMembers =
           std::distance(GlobalECs->member_begin(I), GlobalECs->member_end());
-        if (NumMembers != 1) OS << " + " << (NumMembers-1) << " EC";
+        if (NumMembers != 1) OS << " + " << (NumMembers) << " EC";
       }
     }
     OS << "\n";

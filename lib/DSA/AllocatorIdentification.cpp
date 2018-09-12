@@ -94,7 +94,8 @@ AllocIdentify::~AllocIdentify() {}
 bool AllocIdentify::runOnModule(Module& M) {
 
   allocators.insert("malloc");
-  allocators.insert("calloc");
+  allocators.insert("shmat");
+  allocators.insert("mmap");
   //allocators.insert("realloc");
   //allocators.insert("memset");
   deallocators.insert("free");

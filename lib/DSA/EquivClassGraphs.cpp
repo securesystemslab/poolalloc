@@ -47,7 +47,7 @@ bool EquivBUDataStructures::runOnModule(Module &M) {
   for(Module::iterator F = M.begin(); F != M.end(); ++F) 
   {
     if(!(F->isDeclaration()))
-      graphList.insert(getOrCreateGraph(F));
+      graphList.insert(getOrCreateGraph(&*F));
   }
 
   //update the EQ class from indirect calls
@@ -59,7 +59,7 @@ bool EquivBUDataStructures::runOnModule(Module &M) {
   for(Module::iterator F = M.begin(); F != M.end(); ++F) 
   {
     if(!(F->isDeclaration()))
-      graphList.erase(getOrCreateGraph(F));
+      graphList.erase(getOrCreateGraph(&*F));
   }
   // free memory for the DSGraphs, no longer in use.
   for(std::set<DSGraph*>::iterator i = graphList.begin(),e = graphList.end();
@@ -72,7 +72,7 @@ bool EquivBUDataStructures::runOnModule(Module &M) {
 
   for (Module::iterator F = M.begin(); F != M.end(); ++F) {
     if (!(F->isDeclaration())) {
-      if (DSGraph * Graph = getOrCreateGraph(F)) {
+      if (DSGraph * Graph = getOrCreateGraph(&*F)) {
         cloneGlobalsInto(Graph, DSGraph::DontCloneCallNodes |
                         DSGraph::DontCloneAuxCallNodes);
       }
@@ -146,6 +146,8 @@ EquivBUDataStructures::mergeGraphsByGlobalECs() {
     if (!EQSI->isLeader()) continue;
     DSGraph* BaseGraph = 0;
     std::vector<DSNodeHandle> Args;
+    DSNodeHandle *RetNode = nullptr;
+    DSNodeHandle *VANode = nullptr;
 
     //
     // Iterate through all members of this equivalence class, looking for
@@ -176,7 +178,21 @@ EquivBUDataStructures::mergeGraphsByGlobalECs() {
         if (!BaseGraph) {
           BaseGraph = getOrCreateGraph(F);
           BaseGraph->getFunctionArgumentsForCall(F, Args);
-        } else if (BaseGraph->containsFunction(F)) {
+
+          // The first two elements of Args will be the node handles for the
+          // return node and the VA node, but it will not be references to the
+          // actual node handle returned by getReturnNodeFor or getVANodeFor so
+          // if either of these are null, it won't update any node. We get
+          // pointers to these node handles so we can update them.
+          RetNode = &BaseGraph->getReturnNodeFor(*F);
+          VANode = &BaseGraph->getVANodeFor(*F);
+        } else {
+          if (!BaseGraph->containsFunction(F)) {
+            //
+            // Merge in the DSGraph.
+            //
+            BaseGraph->cloneInto(getOrCreateGraph(F));
+          }
           //
           // The DSGraph for this function has already been merged into the
           // graph that we are creating.  However, that does not mean that
@@ -193,41 +209,22 @@ EquivBUDataStructures::mergeGraphsByGlobalECs() {
           // other function's in this equivalence class.
           //
 
-          //
-          // Merge the arguments together.
-          //
-          std::vector<DSNodeHandle> NextArgs;
-          BaseGraph->getFunctionArgumentsForCall(F, NextArgs);
-          unsigned i = 0, e = Args.size();
-          for (; i != e; ++i) {
-            if (i == NextArgs.size()) break;
-            Args[i].mergeWith(NextArgs[i]);
-          }
-          for (e = NextArgs.size(); i != e; ++i)
-            Args.push_back(NextArgs[i]);
-
-          //
-          // Make this function use the DSGraph that we're creating for all of
-          // the functions in this equivalence class.
-          //
-          setDSGraph(*F, BaseGraph);
-        } else {
-          //
-          // Merge in the DSGraph.
-          //
-          BaseGraph->cloneInto(getOrCreateGraph(F));
+          // Merge the return value
+          RetNode->mergeWith(BaseGraph->getReturnNodeFor(*F));
+          // Merge the VANode
+          VANode->mergeWith(BaseGraph->getVANodeFor(*F));
 
           //
           // Merge the arguments together.
           //
           std::vector<DSNodeHandle> NextArgs;
           BaseGraph->getFunctionArgumentsForCall(F, NextArgs);
-          unsigned i = 0, e = Args.size();
-          for (; i != e; ++i) {
-            if (i == NextArgs.size()) break;
+          unsigned i = 2, e = Args.size();
+          for (; i < e; ++i) {
+            if (i >= NextArgs.size()) break;
             Args[i].mergeWith(NextArgs[i]);
           }
-          for (e = NextArgs.size(); i != e; ++i)
+          for (e = NextArgs.size(); i < e; ++i)
             Args.push_back(NextArgs[i]);
 
           //

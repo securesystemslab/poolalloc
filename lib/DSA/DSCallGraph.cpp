@@ -155,9 +155,6 @@ void DSCallGraph::removeECFunctions() {
     //and apparent self loops inside an SCC
     ii->second.erase(ii->first);
   }
-  for (ActualCalleesTy::iterator ii = ActualCallees.begin(),
-       ee = ActualCallees.end(); ii != ee; ++ii)
-    removeECs(ii->second, SCCs);
 }
 
 void DSCallGraph::buildRoots() {
@@ -249,7 +246,7 @@ DSCallGraph::insert(llvm::CallSite CS, const llvm::Function* F) {
   //
   SimpleCallees[ParentLeader];
   if (F) {
-    ActualCallees[CS].insert(FLeader);
+    ActualCallees[CS].insert(F);
     SimpleCallees[ParentLeader].insert(FLeader);
   }
 }
@@ -260,14 +257,5 @@ void DSCallGraph::insureEntry(const llvm::Function* F) {
 
 void DSCallGraph::addFullFunctionSet(llvm::CallSite CS,
                     svset<const llvm::Function*> &Set) const {
-  DSCallGraph::callee_iterator csi = callee_begin(CS),
-                               cse = callee_end(CS);
-  while(csi != cse) {
-    const Function *F = *csi;
-    Set.insert(scc_begin(F), scc_end(F));
-    ++csi;
-  }
-  const Function *F1 = CS.getInstruction()->getParent()->getParent();
-  F1 = sccLeader(&*F1);
-  Set.insert(scc_begin(F1), scc_end(F1));
+  Set.insert(callee_begin(CS), callee_end(CS));
 }

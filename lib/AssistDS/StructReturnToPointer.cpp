@@ -54,7 +54,7 @@ bool StructRet::runOnModule(Module& M) {
       if(I->hasAddressTaken())
         continue;
       if(I->getReturnType()->isStructTy()) {
-        worklist.push_back(I);
+        worklist.push_back(&*I);
       }
     }
 
@@ -82,7 +82,7 @@ bool StructRet::runOnModule(Module& M) {
     NI->setName("ret");
     ++NI;
     for (Function::arg_iterator II = F->arg_begin(); II != F->arg_end(); ++II, ++NI) {
-      ValueMap[II] = NI;
+      ValueMap[&*II] = &*NI;
       NI->setName(II->getName());
       NI->addAttr(F->getAttributes().getParamAttributes(II->getArgNo() + 1));
     }
@@ -92,7 +92,7 @@ bool StructRet::runOnModule(Module& M) {
     std::vector<Value*> fargs;
     for(Function::arg_iterator ai = NF->arg_begin(), 
         ae= NF->arg_end(); ai != ae; ++ai) {
-      fargs.push_back(ai);
+      fargs.push_back(&*ai);
     }
     NF->setAttributes(NF->getAttributes().addAttributes(
         M.getContext(), 0, F->getAttributes().getRetAttributes()));

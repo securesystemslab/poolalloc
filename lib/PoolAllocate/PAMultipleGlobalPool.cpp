@@ -189,7 +189,7 @@ PoolAllocateMultipleGlobalPool::ProcessFunctionBodySimple (Function& F, const Da
           FInfo.PoolDescriptors.insert(std::make_pair(Node,Pool));
 
           // Mark the realloc as an instruction to delete
-          toDelete.push_back(ii);
+          toDelete.push_back(&*ii);
 
           // Insertion point - Instruction before which all our instructions go
           Instruction *InsertPt = CI;
@@ -233,7 +233,7 @@ PoolAllocateMultipleGlobalPool::ProcessFunctionBodySimple (Function& F, const Da
           FInfo.PoolDescriptors.insert(std::make_pair(Node,Pool));
 
           // Mark the realloc as an instruction to delete
-          toDelete.push_back(ii);
+          toDelete.push_back(&*ii);
 
           // Insertion point - Instruction before which all our instructions go
           Instruction *InsertPt = CI;
@@ -278,7 +278,7 @@ PoolAllocateMultipleGlobalPool::ProcessFunctionBodySimple (Function& F, const Da
           FInfo.PoolDescriptors.insert(std::make_pair(Node, Pool));
 
           // Mark the realloc as an instruction to delete
-          toDelete.push_back(ii);
+          toDelete.push_back(&*ii);
 
           // Insertion point - Instruction before which all our instructions go
           Instruction *InsertPt = CI;

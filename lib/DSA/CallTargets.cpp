@@ -31,13 +31,15 @@
 #include <ostream>
 using namespace llvm;
 
+
+
+namespace {
+STATISTIC (DirCall, "Number of direct calls");
+STATISTIC (IndCall, "Number of indirect calls");
+STATISTIC (CompleteInd, "Number of complete indirect calls");
+STATISTIC (CompleteEmpty, "Number of complete empty calls");
 RegisterPass<dsa::CallTargetFinder<EQTDDataStructures> > X("calltarget-eqtd","Find Call Targets (uses DSA-EQTD)");
 RegisterPass<dsa::CallTargetFinder<TDDataStructures> > Y("calltarget-td","Find Call Targets (uses DSA-TD)");
-namespace {
-  STATISTIC (DirCall, "Number of direct calls");
-  STATISTIC (IndCall, "Number of indirect calls");
-  STATISTIC (CompleteInd, "Number of complete indirect calls");
-  STATISTIC (CompleteEmpty, "Number of complete empty calls");
 
 }
 
@@ -50,14 +52,12 @@ void CallTargetFinder<dsa>::findIndTargets(Module &M)
 {
   dsa* T = &getAnalysis<dsa>();
   const DSCallGraph & callgraph = T->getCallGraph();
-  DSGraph* G = T->getGlobalsGraph();
-  DSGraph::ScalarMapTy& SM = G->getScalarMap();
   for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I)
     if (!I->isDeclaration())
       for (Function::iterator F = I->begin(), FE = I->end(); F != FE; ++F)
         for (BasicBlock::iterator B = F->begin(), BE = F->end(); B != BE; ++B)
           if (isa<CallInst>(B) || isa<InvokeInst>(B)) {
-            CallSite cs(B);
+            CallSite cs(&*B);
             AllSites.push_back(cs);
             Function* CF = cs.getCalledFunction();
 
@@ -84,28 +84,11 @@ void CallTargetFinder<dsa>::findIndTargets(Module &M)
                                    cse = callgraph.callee_end(cs);
                 while(csi != cse) {
                   const Function *F = *csi;
-                  DSCallGraph::scc_iterator sccii = callgraph.scc_begin(F),
-                    sccee = callgraph.scc_end(F);
-                  for(;sccii != sccee; ++sccii) {
-                    DSGraph::ScalarMapTy::const_iterator I = SM.find(SM.getLeaderForGlobal(*sccii));
-                    if (I != SM.end()) {
-                      IndMap[cs].push_back (*sccii);
-                    }
-                  }
+                  assert(F->hasAddressTaken() && "Target of indirect call site is not an address taken function");
+                  IndMap[cs].push_back (F);
                   ++csi;
                 }
-                const Function *F1 = (cs).getInstruction()->getParent()->getParent();
-                F1 = callgraph.sccLeader(&*F1);
                 
-                DSCallGraph::scc_iterator sccii = callgraph.scc_begin(F1),
-                  sccee = callgraph.scc_end(F1);
-                for(;sccii != sccee; ++sccii) {
-                  DSGraph::ScalarMapTy::const_iterator I = SM.find(SM.getLeaderForGlobal(*sccii));
-                  if (I != SM.end()) {
-                    IndMap[cs].push_back (*sccii);
-                  }
-                }
-
                 DSNode* N = T->getDSGraph(*cs.getCaller())
                   ->getNodeForValue(cs.getCalledValue()).getNode();
                 assert (N && "CallTarget: findIndTargets: No DSNode!");

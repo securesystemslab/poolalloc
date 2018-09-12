@@ -65,7 +65,7 @@ bool BUDataStructures::runOnModuleInternal(Module& M) {
   //
   for (Module::iterator F = M.begin(); F != M.end(); ++F) {
     if (!(F->isDeclaration())){
-      getOrCreateGraph(F);
+      getOrCreateGraph(&*F);
     }
   }
 
@@ -101,7 +101,7 @@ bool BUDataStructures::runOnModuleInternal(Module& M) {
   //
   for (Module::iterator F = M.begin(); F != M.end(); ++F) {
     if (!(F->isDeclaration())){
-      DSGraph *Graph  = getOrCreateGraph(F);
+      DSGraph *Graph  = getOrCreateGraph(&*F);
       cloneGlobalsInto(Graph, DSGraph::DontCloneCallNodes |
                         DSGraph::DontCloneAuxCallNodes);
       Graph->buildCallGraph(callgraph, GlobalFunctionList, filterCallees);
@@ -116,7 +116,7 @@ bool BUDataStructures::runOnModuleInternal(Module& M) {
   // Once the correct flags have been calculated. Update the callgraph.
   for (Module::iterator F = M.begin(); F != M.end(); ++F) {
     if (!(F->isDeclaration())){
-      DSGraph *Graph = getOrCreateGraph(F);
+      DSGraph *Graph = getOrCreateGraph(&*F);
       Graph->buildCompleteCallGraph(callgraph,
                                     GlobalFunctionList, filterCallees);
     }
@@ -190,6 +190,28 @@ getAllCallees(const DSCallSite &CS, FuncSet &Callees) {
       // into the master 'Callees' list
       Callees.insert(TempCallees.begin(), TempCallees.end());
     }
+  } else if (InlineUsingCallGraph) {
+    // Get all callees in the callgraph for this function.
+    FuncSet TempCallees;
+    TempCallees.insert(callgraph.callee_begin(CS.getCallSite()), callgraph.callee_end(CS.getCallSite()));
+
+    // If we call an external function, return immediately, we will perform no
+    // inlining of this callsite.
+    const DSGraph *GG = getGlobalsGraph();
+    for (const Function *F : TempCallees) {
+      // If F is an external function or in the same equivalence class as an
+      // external function, return without adding functions to Callees.
+      if (F->isDeclaration() ||
+          (GG->hasNodeForValue(F) && GG->getNodeForValue(F).getNode()->isExternFuncNode())) {
+        return;
+      }
+    }
+
+    // Filter out invalid targets.
+    applyCallsiteFilter(CS, TempCallees);
+
+    // Insert remaining callees.
+    Callees.insert(TempCallees.begin(), TempCallees.end());
   }
 }
 
@@ -307,11 +329,11 @@ BUDataStructures::postOrderInline (Module & M) {
   // Calculate the graphs for any functions that are unreachable from main...
   //
   for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I)
-    if (!I->isDeclaration() && !ValMap.count(I)) {
+    if (!I->isDeclaration() && !ValMap.count(&*I)) {
       if (MainFunc)
         DEBUG(errs() << debugname << ": Function unreachable from main: "
         << I->getName() << "\n");
-      calculateGraphs(I, Stack, NextID, ValMap);     // Calculate all graphs.
+      calculateGraphs(&*I, Stack, NextID, ValMap);     // Calculate all graphs.
       CloneAuxIntoGlobal(getDSGraph(*I));
 
       // Mark this graph as processed.  Do this by finding all functions
@@ -501,9 +523,6 @@ BUDataStructures::calculateGraphs (const Function *F,
     if (MaxSCC < SCCSize)
       MaxSCC = SCCSize;
 
-    // Clean up the graph before we start inlining a bunch again...
-    SCCGraph->removeDeadNodes(DSGraph::KeepUnreachableGlobals);
-
     // Now that we have one big happy family, resolve all of the call sites in
     // the graph...
     calculateGraph(SCCGraph);
@@ -665,19 +684,22 @@ void BUDataStructures::calculateGraph(DSGraph* Graph) {
     // This means, that either it is a direct call site. Or if it is
     // an indirect call site, its calleeNode is complete, and we can
     // resolve this particular call site.
-    assert((CS.isDirectCall() || CS.getCalleeNode()->isCompleteNode())
+    assert((InlineUsingCallGraph || CS.isDirectCall() || CS.getCalleeNode()->isCompleteNode())
        && "Resolving an indirect incomplete call site");
 
     if (CS.isIndirectCall()) {
         ++NumIndResolved;
     }
 
-    DSGraph *GI;
+    // Update callgraph with the result of this inlining. This is useful since
+    // we may be resolving a callsite inlined from a different function, but
+    // DSGraph::buildCallGraph only considers calls that are in this function.
+    callgraph.insert(CS.getCallSite(), CalledFuncs.begin(), CalledFuncs.end());
 
     for (auto *Callee : CalledFuncs) {
       // Get the data structure graph for the called function.
 
-      GI = getDSGraph(*Callee);  // Graph to inline
+      DSGraph *GI = getDSGraph(*Callee);  // Graph to inline
       DEBUG(GI->AssertGraphOK(); GI->getGlobalsGraph()->AssertGraphOK());
       DEBUG(errs() << "    Inlining graph for " << Callee->getName()
 	    << "[" << GI->getGraphSize() << "+"

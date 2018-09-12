@@ -131,7 +131,7 @@ void DSScalarMap::spliceFrom(DSScalarMap &RHS) {
 //===----------------------------------------------------------------------===//
 
 DSNode::DSNode(DSGraph *G)
-  : NumReferrers(0), Size(0), ParentGraph(G), NodeType(0) {
+    : NumReferrers(0), Size(0), ParentGraph(G), NodeType(0) {
     // Add the type entry if it is specified...
     if (G) G->addNode(this);
     ++NumNodeAllocated;
@@ -140,7 +140,8 @@ DSNode::DSNode(DSGraph *G)
 // DSNode copy constructor... do not copy over the referrers list!
 DSNode::DSNode(const DSNode &N, DSGraph *G, bool NullLinks)
   : NumReferrers(0), Size(N.Size), ParentGraph(G), TyMap(N.TyMap),
-  Globals(N.Globals), NodeType(N.NodeType) {
+    Globals(N.Globals), NodeType(N.NodeType) {
+    mergeMetaData(N);
     if (!NullLinks) Links = N.Links;
     G->addNode(this);
     ++NumNodeAllocated;
@@ -219,6 +220,10 @@ void DSNode::addFunction(const Function* F) {
   addGlobal(F);
 }
 
+void DSNode::addAllocation(const Value *V) {
+  Allocations.insert(V);
+}
+
 // removeGlobal - Remove the specified global that is explicitly in the globals
 // list.
 void DSNode::removeGlobal(const GlobalValue *GV) {
@@ -258,6 +263,9 @@ void DSNode::foldNodeCompletely() {
     DestNode->setCollapsedMarker();
     DestNode->Size = 1;
     DestNode->Globals.swap(Globals);
+    DestNode->Reasons.swap(Reasons);
+    DestNode->mergeAllocations(*this);
+    clearAllocations();
 
     // Start forwarding to the destination node...
     forwardNode(DestNode, 0);
@@ -277,7 +285,7 @@ void DSNode::addValueList(std::vector<const Value*> &List) const {
   DSScalarMap &SN = getParentGraph()->getScalarMap();
   for(DSScalarMap::const_iterator I = SN.begin(), E = SN.end(); I!= E; I++) {
     if(SN[I->first].getNode() == this){
-      //I->first->dump();
+      List.push_back(I->first);
     }
 
   }
@@ -508,6 +516,16 @@ void DSNode::mergeGlobals(const DSNode &RHS) {
   Globals.insert(RHS.Globals.begin(), RHS.Globals.end());
 }
 
+void DSNode::mergeReasons(const DSNode &RHS) {
+  for (auto &s : RHS.Reasons) {
+    Reasons.insert(s.first());
+  }
+}
+
+void DSNode::mergeAllocations(const DSNode &RHS) {
+  Allocations.insert(RHS.Allocations.begin(), RHS.Allocations.end());
+}
+
 // MergeNodes - Helper function for DSNode::mergeWith().
 // This function does the hard work of merging two nodes, CurNodeH
 // and NH after filtering out trivial cases and making sure that
@@ -646,6 +664,11 @@ void DSNode::MergeNodes(DSNodeHandle& CurNodeH, DSNodeHandle& NH) {
 
   // Delete the globals from the old node...
   N->Globals.clear();
+
+  // Merge the metadata, this contains the reasons and the number of
+  // allocations.
+  CurNodeH.getNode()->mergeMetaData(*N);
+  N->clearMetaData();
 }
 
 
@@ -933,6 +956,9 @@ void ReachabilityCloner::merge(const DSNodeHandle &NH,
     // Merge the NodeType information.
     DN->mergeNodeFlags(SN->getNodeFlags() & BitsToKeep);
 
+    // Merge the reason information.
+    DN->mergeMetaData(*SN);
+
     // Before we start merging outgoing links and updating the scalar map, make
     // sure it is known that this is the representative node for the src node.
     SCNH = DSNodeHandle(DN, NH.getOffset()-SrcNH.getOffset());
@@ -1166,21 +1192,30 @@ void DSNode::remapLinks(DSGraph::NodeMapTy &OldNodeMap) {
 /// to the set, which allows it to only traverse visited nodes once.
 ///
 void DSNode::markReachableNodes(DenseSet<const DSNode*> &ReachableNodes) const {
-  if (this == 0) return;
+  // This check is optimized away in -O2 :( Pushing the check up to callers.
+  // if (this == 0) return;
   assert(!isForwarding() && "Cannot mark a forwarded node!");
   if (ReachableNodes.insert(this).second) // Is newly reachable?
     for (DSNode::const_edge_iterator I = edge_begin(), E = edge_end();
-         I != E; ++I)
-      I->second.getNode()->markReachableNodes(ReachableNodes);
+         I != E; ++I) {
+      DSNode *N = I->second.getNode();
+      if (N != 0)
+        N->markReachableNodes(ReachableNodes);
+    }
 }
 
 void DSCallSite::markReachableNodes(DenseSet<const DSNode*> &Nodes) const {
-  getRetVal().getNode()->markReachableNodes(Nodes);
-  getVAVal().getNode()->markReachableNodes(Nodes);
-  if (isIndirectCall()) getCalleeNode()->markReachableNodes(Nodes);
+  if (getRetVal().getNode())
+    getRetVal().getNode()->markReachableNodes(Nodes);
+  if (getVAVal().getNode())
+    getVAVal().getNode()->markReachableNodes(Nodes);
+  if (isIndirectCall())
+    if (getCalleeNode())
+      getCalleeNode()->markReachableNodes(Nodes);
 
   for (unsigned i = 0, e = getNumPtrArgs(); i != e; ++i)
-    getPtrArg(i).getNode()->markReachableNodes(Nodes);
+    if (getPtrArg(i).getNode())
+      getPtrArg(i).getNode()->markReachableNodes(Nodes);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1327,13 +1362,19 @@ void DataStructures::formGlobalFunctionList() {
   for (DSScalarMap::global_iterator I = SN.global_begin(), E = SN.global_end(); I != E; ++I) {
     EquivalenceClasses<const GlobalValue*>::iterator ECI = EC.findValue(*I);
     if (ECI == EC.end()) {
-      if (const Function *F = dyn_cast<Function>(*I))
-        List.push_back(F);
+      if (const Function *F = dyn_cast<Function>(*I)) {
+        if (!(F->getName() == "__cxa_pure_virtual" && F->isDeclaration())) {
+          List.push_back(F);
+        }
+      }
     } else {
       for (EquivalenceClasses<const GlobalValue*>::member_iterator MI =
-           EC.member_begin(ECI), ME = EC.member_end(); MI != ME; ++MI){
-        if (const Function *F = dyn_cast<Function>(*MI))
-          List.push_back(F);
+             EC.member_begin(ECI), ME = EC.member_end(); MI != ME; ++MI){
+        if (const Function *F = dyn_cast<Function>(*MI)) {
+          if (!(F->getName() == "__cxa_pure_virtual" && F->isDeclaration())) {
+            List.push_back(F);
+          }
+        }
       }
     }
   }

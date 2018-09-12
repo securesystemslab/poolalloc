@@ -495,7 +495,8 @@ ProcessNodesReachableFromGlobals(DSGraph &DSG,
   hash_set<const DSNode*> Reachable;
   for (DSScalarMap::global_iterator GI = SM.global_begin(),
          E = SM.global_end(); GI != E; ++GI)
-    SM[*GI].getNode()->markReachableNodes(Reachable);
+    if (SM[*GI].getNode())
+      SM[*GI].getNode()->markReachableNodes(Reachable);
   if (Reachable.empty()) return;
   
   // If any of the nodes with dataflow facts are reachable from the globals

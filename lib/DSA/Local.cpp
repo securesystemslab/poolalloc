@@ -115,7 +115,11 @@ namespace {
     friend class InstVisitor<GraphBuilder>;
 
     void visitAllocaInst(AllocaInst &AI)
-    { setDestTo(AI, createNode()->setAllocaMarker()); }
+    {
+      DSNode *N = createNode()->setAllocaMarker();
+      N->addAllocation(&AI);
+      setDestTo(AI, N);
+    }
 
     //the simple ones
     void visitPHINode(PHINode &PN);
@@ -144,13 +148,31 @@ namespace {
     void visitVAStart(CallSite CS);
     void visitVAStartNode(DSNode* N);
 
+    bool pointerCompatiblePrimitiveType(Type *T) {
+      Type *IntPtrTy = TD.getIntPtrType(T->getContext());
+      return T->isPointerTy() || T == IntPtrTy || T->isTrampolineTy() ||
+        (T->isIntegerTy() && T->getPrimitiveSizeInBits() >= IntPtrTy->getPrimitiveSizeInBits());
+    }
+
+    bool pointerCompatible(Type *T) {
+      return pointerCompatiblePrimitiveType(T) ||
+        (T->isVectorTy() && pointerCompatiblePrimitiveType(T->getVectorElementType())) ||
+        (T->isArrayTy() && pointerCompatiblePrimitiveType(T->getArrayElementType()));
+    }
+
+    bool pointerType(Type *T) {
+      return T->isPointerTy() || T->isTrampolineTy() ||
+        (T->isVectorTy() && T->getVectorElementType()->isPointerTy()) ||
+        (T->isArrayTy() && T->getArrayElementType()->isPointerTy());
+    }
+
   public:
     GraphBuilder(Function &f, DSGraph &g, LocalDataStructures& DSi)
       : G(g), FB(&f), DS(&DSi), TD(g.getDataLayout()), VAArrayNH(0) {
       // Create scalar nodes for all pointer arguments...
       for (Function::arg_iterator I = f.arg_begin(), E = f.arg_end();
            I != E; ++I) {
-        if (isa<PointerType>(I->getType())) {
+        if (pointerCompatible(I->getType())) {
           // WD: Why do we set the external marker so early in the analysis?
           // Functions we have definitions for, but are externally reachable have no external contexts
           // that we'd want to BU external information into (since those contexts are by definition
@@ -161,7 +183,7 @@ namespace {
           if (!f.hasInternalLinkage() || !f.hasPrivateLinkage())
             Node->setExternalMarker();
 #else
-          getValueDest(I).getNode();
+          getValueDest(&*I).getNode();
 #endif
 
         }
@@ -261,19 +283,26 @@ DSNodeHandle GraphBuilder::getValueDest(Value* V) {
   if (Function * F = dyn_cast<Function > (V)) {
     // Create a new global node for this function.
     N = createNode();
-    N->addFunction(F);
-    if (F->isDeclaration())
-      N->setExternFuncMarker();
+    if (!((F->getName() == "__cxa_pure_virtual" && F->isDeclaration()) ||
+          (F->getName() == "__llvm_boobytrap" && F->isDeclaration()))) {
+      N->addFunction(F);
+      if (F->isDeclaration())
+        N->setExternFuncMarker();
+    }
+  } else if (auto *JT = dyn_cast<JumpTrampoline>(V)) {
+    NH = getValueDest(JT->getTarget());
+    return NH;
   } else if (GlobalValue * GV = dyn_cast<GlobalValue > (V)) {
     // Create a new global node for this global variable.
     N = createNode();
     N->addGlobal(GV);
+    N->addAllocation(GV);
     if (GV->isDeclaration())
       N->setExternGlobalMarker();
   } else if (Constant *C = dyn_cast<Constant>(V)) {
     if (ConstantExpr *CE = dyn_cast<ConstantExpr>(C)) {
       if (CE->isCast()) {
-        if (isa<PointerType>(CE->getOperand(0)->getType()))
+        if (pointerCompatible(CE->getOperand(0)->getType()))
           NH = getValueDest(CE->getOperand(0));
         else
           NH = createNode()->setUnknownMarker();
@@ -308,17 +337,21 @@ DSNodeHandle GraphBuilder::getValueDest(Value* V) {
       N = createNode();
       N->setUnknownMarker();
     } else if (isa<ConstantStruct>(C) || isa<ConstantArray>(C) ||
-               isa<ConstantDataSequential>(C) || isa<ConstantDataArray>(C) ||
-               isa<ConstantDataVector>(C)) {
+               isa<ConstantVector>(C) || isa<ConstantDataSequential>(C) ||
+               isa<ConstantDataArray>(C) || isa<ConstantDataVector>(C)) {
       // Treat these the same way we treat global initializers
       N = createNode();
       NH.mergeWith(N);
       MergeConstantInitIntoNode(NH, C->getType(), C);
+      return NH;
+    } else if (pointerCompatible(C->getType())) {
+      N = createNode();
+      NH = N->setUnknownMarker();
+      return NH;
     } else {
       errs() << "Unknown constant: " << *C << "\n";
       assert(0 && "Unknown constant type!");
     }
-    N = createNode(); // just create a shadow node
   } else {
     // Otherwise just create a shadow node
     N = createNode();
@@ -363,22 +396,30 @@ void GraphBuilder::setDestTo(Value &V, const DSNodeHandle &NH) {
 // incoming values point to... which effectively causes them to be merged.
 //
 void GraphBuilder::visitPHINode(PHINode &PN) {
-  if (!isa<PointerType>(PN.getType())) return; // Only pointer PHIs
+  if (!pointerCompatible(PN.getType())) return; // Only pointer PHIs
 
-  DSNodeHandle &PNDest = G.getNodeForValue(&PN);
+  DSNodeHandle PNDest;
   for (unsigned i = 0, e = PN.getNumIncomingValues(); i != e; ++i)
     PNDest.mergeWith(getValueDest(PN.getIncomingValue(i)));
+
+  if (!PNDest.isNull()) {
+    G.getNodeForValue(&PN).mergeWith(PNDest);
+  }
 }
 
 void GraphBuilder::visitSelectInst(SelectInst &SI) {
-  if (!isa<PointerType>(SI.getType()))
+  if (!pointerCompatible(SI.getType()))
     return; // Only pointer Selects
 
-  DSNodeHandle &Dest = G.getNodeForValue(&SI);
+  DSNodeHandle Dest;
   DSNodeHandle S1 = getValueDest(SI.getOperand(1));
   DSNodeHandle S2 = getValueDest(SI.getOperand(2));
   Dest.mergeWith(S1);
   Dest.mergeWith(S2);
+
+  if (!Dest.isNull()) {
+    G.getNodeForValue(&SI).mergeWith(Dest);
+  }
 }
 
 void GraphBuilder::visitLoadInst(LoadInst &LI) {
@@ -396,7 +437,7 @@ void GraphBuilder::visitLoadInst(LoadInst &LI) {
   // Ensure a typerecord exists...
   Ptr.getNode()->growSizeForType(LI.getType(), Ptr.getOffset());
 
-  if (isa<PointerType>(LI.getType()))
+  if (pointerCompatible(LI.getType()))
     setDestTo(LI, getLink(Ptr));
 
   // check that it is the inserted value
@@ -422,7 +463,7 @@ void GraphBuilder::visitStoreInst(StoreInst &SI) {
   Dest.getNode()->growSizeForType(StoredTy, Dest.getOffset());
 
   // Avoid adding edges from null, or processing non-"pointer" stores
-  if (isa<PointerType>(StoredTy))
+  if (pointerCompatible(StoredTy))
     Dest.addEdgeTo(getValueDest(SI.getOperand(0)));
 
   if(TypeInferenceOptimize)
@@ -435,7 +476,7 @@ void GraphBuilder::visitStoreInst(StoreInst &SI) {
 }
 
 void GraphBuilder::visitAtomicCmpXchgInst(AtomicCmpXchgInst &I) {
-  if (isa<PointerType>(I.getType())) {
+  if (pointerCompatible(I.getType())) {
     visitInstruction (I);
     return;
   }
@@ -461,7 +502,7 @@ void GraphBuilder::visitAtomicCmpXchgInst(AtomicCmpXchgInst &I) {
   //  o Merge the DSNode of the pointer *within* the memory object with the
   //    DSNode of the compare, swap, and result DSNode.
   //
-  if (isa<PointerType>(I.getType())) {
+  if (pointerCompatible(I.getType())) {
     //
     // Get the DSNodeHandle of the memory object returned from the load.  Make
     // it the DSNodeHandle of the instruction's result.
@@ -510,7 +551,7 @@ void GraphBuilder::visitAtomicRMWInst(AtomicRMWInst &I) {
 }
 
 void GraphBuilder::visitReturnInst(ReturnInst &RI) {
-  if (RI.getNumOperands() && isa<PointerType>(RI.getOperand(0)->getType()))
+  if (RI.getNumOperands() && pointerCompatible(RI.getOperand(0)->getType()))
     G.getOrCreateReturnNodeFor(*FB).mergeWith(getValueDest(RI.getOperand(0)));
 }
 
@@ -534,7 +575,7 @@ void GraphBuilder::visitVAArgInst(VAArgInst &I) {
 
     // Not updating type info, as it is already a collapsed node
 
-    if (isa<PointerType>(I.getType()))
+    if (pointerCompatible(I.getType()))
       Dest.mergeWith(Ptr);
     return; 
   }
@@ -553,59 +594,56 @@ void GraphBuilder::visitVAArgInst(VAArgInst &I) {
     DSNode *PtrN = Ptr.getNode();
     PtrN->mergeTypeInfo(I.getType(), Ptr.getOffset());
 
-    if (isa<PointerType>(I.getType()))
+    if (pointerCompatible(I.getType()))
       setDestTo(I, getLink(Ptr));
   }
   }
 }
 
 void GraphBuilder::visitIntToPtrInst(IntToPtrInst &I) {
-  DSNode *N = createNode();
+  DSNodeHandle NH = getValueDest(I.getOperand(0));
   if(I.hasOneUse()) {
     if(isa<ICmpInst>(*(I.user_begin()))) {
       NumBoringIntToPtr++;
-      return;
     }
-  } else {
-    N->setIntToPtrMarker();
-    N->setUnknownMarker();
   }
-  setDestTo(I, N); 
+  NH.getNode()->setIntToPtrMarker();
+  setDestTo(I, NH);
 }
 
 void GraphBuilder::visitPtrToIntInst(PtrToIntInst& I) {
-  DSNode* N = getValueDest(I.getOperand(0)).getNode();
+  DSNodeHandle NH = getValueDest(I.getOperand(0));
   if(I.hasOneUse()) {
     if(isa<ICmpInst>(*(I.user_begin()))) {
       NumBoringIntToPtr++;
-      return;
+    } else {
+      Value *V = dyn_cast<Value>(*(I.user_begin()));
+      DenseSet<Value *> Seen;
+      while(V && V->hasOneUse() &&
+            Seen.insert(V).second) {
+        if(isa<LoadInst>(V))
+          break;
+        if(isa<StoreInst>(V))
+          break;
+        if(isa<CallInst>(V))
+          break;
+        V = dyn_cast<Value>(*(V->user_begin()));
+      }
+      if(isa<BranchInst>(V)){
+        NumBoringIntToPtr++;
+      }
     }
   }
-  if(I.hasOneUse()) {
-    Value *V = dyn_cast<Value>(*(I.user_begin()));
-    DenseSet<Value *> Seen;
-    while(V && V->hasOneUse() &&
-          Seen.insert(V).second) {
-      if(isa<LoadInst>(V))
-        break;
-      if(isa<StoreInst>(V))
-        break;
-      if(isa<CallInst>(V))
-        break;
-      V = dyn_cast<Value>(*(V->user_begin()));
-    }
-    if(isa<BranchInst>(V)){
-      NumBoringIntToPtr++;
-      return;
-    }
-  }
-  if(N)
+
+  setDestTo(I, NH);
+  if(DSNode *N = NH.getNode()) {
     N->setPtrToIntMarker();
+  }
 }
 
 
 void GraphBuilder::visitBitCastInst(BitCastInst &I) {
-  if (!isa<PointerType>(I.getType())) return; // Only pointers
+  if (!pointerCompatible(I.getType())) return; // Only pointers
   DSNodeHandle Ptr = getValueDest(I.getOperand(0));
   if (Ptr.isNull()) return;
   setDestTo(I, Ptr);
@@ -662,7 +700,7 @@ void GraphBuilder::visitInsertValueInst(InsertValueInst& I) {
   Dest.getNode()->mergeTypeInfo(StoredTy, Offset);
 
   // Avoid adding edges from null, or processing non-"pointer" stores
-  if (isa<PointerType>(StoredTy))
+  if (pointerCompatible(StoredTy))
     Dest.addEdgeTo(getValueDest(I.getInsertedValueOperand()));
 }
 
@@ -678,7 +716,7 @@ void GraphBuilder::visitExtractValueInst(ExtractValueInst& I) {
   // Ensure a typerecord exists...
   Ptr.getNode()->mergeTypeInfo(I.getType(), Offset);
 
-  if (isa<PointerType>(I.getType()))
+  if (pointerCompatible(I.getType()))
     setDestTo(I, getLink(Ptr));
 }
 
@@ -1069,7 +1107,7 @@ bool GraphBuilder::visitIntrinsic(CallSite CS, Function *F) {
   case Intrinsic::eh_selector: {
     for (CallSite::arg_iterator I = CS.arg_begin(), E = CS.arg_end();
          I != E; ++I) {
-      if (isa<PointerType>((*I)->getType())) {
+      if (pointerCompatible((*I)->getType())) {
         DSNodeHandle Ptr = getValueDest(*I);
         if(Ptr.getNode()) {
           Ptr.getNode()->setReadMarker();
@@ -1117,11 +1155,11 @@ bool GraphBuilder::visitIntrinsic(CallSite CS, Function *F) {
 
   default: {
     //ignore pointer free intrinsics
-    if (!isa<PointerType>(F->getReturnType())) {
+    if (!pointerType(F->getReturnType())) {
       bool hasPtr = false;
       for (Function::const_arg_iterator I = F->arg_begin(), E = F->arg_end();
            I != E && !hasPtr; ++I)
-        if (isa<PointerType>(I->getType()))
+        if (pointerType(I->getType()))
           hasPtr = true;
       if (!hasPtr)
         return true;
@@ -1150,12 +1188,12 @@ void GraphBuilder::visitCallSite(CallSite CS) {
     ++NumAsmCall;
     DSNodeHandle RetVal;
     Instruction *I = CS.getInstruction();
-    if (isa<PointerType > (I->getType()))
+    if (pointerCompatible(I->getType()))
       RetVal = getValueDest(I);
 
     // Calculate the arguments vector...
     for (CallSite::arg_iterator I = CS.arg_begin(), E = CS.arg_end(); I != E; ++I)
-      if (isa<PointerType > ((*I)->getType()))
+      if (pointerCompatiblePrimitiveType((*I)->getType()))
         RetVal.mergeWith(getValueDest(*I));
     if (!RetVal.isNull())
       RetVal.getNode()->foldNodeCompletely();
@@ -1165,7 +1203,7 @@ void GraphBuilder::visitCallSite(CallSite CS) {
   // Set up the return value...
   DSNodeHandle RetVal;
   Instruction *I = CS.getInstruction();
-  if (isa<PointerType>(I->getType()))
+  if (pointerCompatible(I->getType()))
     RetVal = getValueDest(I);
 
   DSNode *CalleeNode = 0;
@@ -1197,18 +1235,24 @@ void GraphBuilder::visitCallSite(CallSite CS) {
   Args.reserve(CS.arg_size());
   DSNodeHandle VarArgNH;
 
+  auto &FF = DS->getAnalysis<FormatFunctions>();
+  bool MergeVarArg = !FF.isFormatFunction(Callee);
+
   // Calculate the arguments vector...
   // Add all fixed pointer arguments, then merge the rest together
   for (CallSite::arg_iterator I = CS.arg_begin(), E = CS.arg_end();
-       I != E; ++I)
-    if (isa<PointerType>((*I)->getType())) {
-      DSNodeHandle ArgNode = getValueDest(*I);
-      if (I - CS.arg_begin() < NumFixedArgs) {
-        Args.push_back(ArgNode);
-      } else {
-        VarArgNH.mergeWith(ArgNode);
-      }
+       I != E; ++I) {
+    DSNodeHandle ArgNode;
+    // Only primitive types since vectors shouldn't be passed as arguments.
+    if (pointerCompatiblePrimitiveType((*I)->getType())) {
+      ArgNode = getValueDest(*I);
     }
+    if ((I - CS.arg_begin() < NumFixedArgs) || !MergeVarArg) {
+      Args.push_back(ArgNode);
+    } else {
+      VarArgNH.mergeWith(ArgNode);
+    }
+  }
 
   // Add a new function call entry...
   if (CalleeNode) {
@@ -1230,10 +1274,10 @@ void GraphBuilder::visitCallSite(CallSite CS) {
 // the nodes together.
 void GraphBuilder::visitInstruction(Instruction &Inst) {
   DSNodeHandle CurNode;
-  if (isa<PointerType>(Inst.getType()))
+  if (pointerCompatible(Inst.getType()))
     CurNode = getValueDest(&Inst);
   for (User::op_iterator I = Inst.op_begin(), E = Inst.op_end(); I != E; ++I)
-    if (isa<PointerType>((*I)->getType()))
+    if (pointerCompatible((*I)->getType()))
       CurNode.mergeWith(getValueDest(*I));
 
   if (DSNode *N = CurNode.getNode())
@@ -1267,7 +1311,7 @@ GraphBuilder::MergeConstantInitIntoNode(DSNodeHandle &NH,
   // make a link from the specified DSNode to the new DSNode describing the
   // pointer we've just found.
   //
-  if (isa<PointerType>(Ty)) {
+  if (pointerCompatiblePrimitiveType(Ty)) {
     NHN->mergeTypeInfo(Ty, NH.getOffset());
     NH.addEdgeTo(getValueDest(C));
     return;
@@ -1277,7 +1321,8 @@ GraphBuilder::MergeConstantInitIntoNode(DSNodeHandle &NH,
   // If the type of the object (array element, structure field, etc.) is an
   // integer or floating point type, then just ignore it.  It has no DSNode.
   //
-  if (Ty->isIntOrIntVectorTy() || Ty->isFPOrFPVectorTy()) return;
+  if ((Ty->isIntOrIntVectorTy() || Ty->isFPOrFPVectorTy())
+      && !pointerCompatible(Ty)) { return; }
 
   //
   // Handle aggregate constants.
@@ -1291,6 +1336,22 @@ GraphBuilder::MergeConstantInitIntoNode(DSNodeHandle &NH,
     for (unsigned i = 0, e = CA->getNumOperands(); i != e; ++i) {
       Constant * ConstElement = cast<Constant>(CA->getOperand(i));
       MergeConstantInitIntoNode(NH, ElementType, ConstElement);
+    }
+  } else if (ConstantVector *CV = dyn_cast<ConstantVector>(C)) {
+    // Conservatively fold the vector node, at the moment we don't check offsets
+    // in vectors
+    NHN->foldNodeCompletely();
+    Type *ElementType = Ty->getVectorElementType();
+    if (pointerCompatiblePrimitiveType(ElementType)) {
+      for (unsigned i = 0, e = CV->getNumOperands(); i < e; ++i) {
+        Constant *ConstElement = cast<Constant>(CV->getOperand(i));
+        // We merge the node into the vectors node handle since having a pointer
+        // in a vector isn't like having it in an array. The array is an object,
+        // which can contain links to others, but a vector of pointers can be
+        // used anywhere a pointer can, so the node should be the same as the
+        // pointers it contains.
+        NH.mergeWith(getValueDest(ConstElement));
+      }
     }
   } else if (ConstantStruct *CS = dyn_cast<ConstantStruct>(C)) {
     //
@@ -1366,6 +1427,7 @@ void GraphBuilder::mergeInGlobalInitializer(GlobalVariable *GV) {
   // Get a node handle to the global node and merge the initializer into it.
   //
   DSNodeHandle NH = getValueDest(GV);
+  NH.getNode()->addAllocation(GV);
 
   //
   // Ensure that the DSNode is large enough to hold the new constant that we'll
@@ -1392,6 +1454,7 @@ void GraphBuilder::mergeInGlobalInitializer(GlobalVariable *GV) {
 void GraphBuilder::mergeExternalGlobal(GlobalVariable *GV) {
   // Get a node handle to the global node and merge the initializer into it.
   DSNodeHandle NH = getValueDest(GV);
+  NH.getNode()->addAllocation(GV);
 }
 
 // some evil programs use sections as linker generated arrays
@@ -1411,11 +1474,11 @@ void handleMagicSections(DSGraph* GlobalsGraph, Module& M) {
       for (Module::iterator MI = M.begin(), ME = M.end();
            MI != ME; ++MI)
         if (MI->hasSection() && MI->getSection() == section)
-          inSection.insert(MI);
+          inSection.insert(&*MI);
       for (Module::global_iterator MI = M.global_begin(), ME = M.global_end();
            MI != ME; ++MI)
         if (MI->hasSection() && MI->getSection() == section)
-          inSection.insert(MI);
+          inSection.insert(&*MI);
 
       for (unsigned x = 0; x < count; ++x) {
         std::string global;
@@ -1454,14 +1517,14 @@ bool LocalDataStructures::runOnModule(Module &M) {
          I != E; ++I)
       if (!(I->hasSection() && StringRef(I->getSection()) == "llvm.metadata")) {
         if (I->isDeclaration())
-          GGB.mergeExternalGlobal(I);
+          GGB.mergeExternalGlobal(&*I);
         else
-          GGB.mergeInGlobalInitializer(I);
+          GGB.mergeInGlobalInitializer(&*I);
       }
     // Add Functions to the globals graph.
     for (Module::iterator FI = M.begin(), FE = M.end(); FI != FE; ++FI){
-      if(addrAnalysis->hasAddressTaken(FI)) {
-        GGB.mergeFunction(FI);
+      if(addrAnalysis->hasAddressTaken(&*FI)) {
+        GGB.mergeFunction(&*FI);
       }
     }
   }
@@ -1487,7 +1550,7 @@ bool LocalDataStructures::runOnModule(Module &M) {
       G->getAuxFunctionCalls() = G->getFunctionCalls();
       setDSGraph(*I, G);
       propagateUnknownFlag(G);
-      callgraph.insureEntry(I);
+      callgraph.insureEntry(&*I);
       G->buildCallGraph(callgraph, GlobalFunctionList, true);
       G->maskIncompleteMarkers();
       G->markIncompleteNodes(DSGraph::MarkFormalArgs
@@ -1513,7 +1576,7 @@ bool LocalDataStructures::runOnModule(Module &M) {
   propagateUnknownFlag(GlobalsGraph);
   for (Module::iterator I = M.begin(), E = M.end(); I != E; ++I)
     if (!I->isDeclaration()) {
-      DSGraph *Graph = getOrCreateGraph(I);
+      DSGraph *Graph = getOrCreateGraph(&*I);
       Graph->maskIncompleteMarkers();
       cloneGlobalsInto(Graph, DSGraph::DontCloneCallNodes |
                        DSGraph::DontCloneAuxCallNodes);

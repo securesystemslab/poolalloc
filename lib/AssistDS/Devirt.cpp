@@ -170,7 +170,7 @@ Devirtualize::buildBounce (CallSite CS, std::vector<const Function*>& Targets) {
   std::vector<Value*> fargs;
   for(Function::arg_iterator ai = F->arg_begin(), ae = F->arg_end(); ai != ae; ++ai)
     if (ai != F->arg_begin()) {
-      fargs.push_back(ai);
+      fargs.push_back(&*ai);
       ai->setName("arg");
     }
 
@@ -224,7 +224,7 @@ Devirtualize::buildBounce (CallSite CS, std::vector<const Function*>& Targets) {
   // pointer and branch to the appropriate basic block to call the function.
   //
   Type * VoidPtrType = getVoidPtrType (M->getContext());
-  Value * FArg = castTo (F->arg_begin(), VoidPtrType, "", InsertPt);
+  Value * FArg = castTo (&*F->arg_begin(), VoidPtrType, "", InsertPt);
   BasicBlock * tailBB = failBB;
   for (unsigned index = 0; index < Targets.size(); ++index) {
     //

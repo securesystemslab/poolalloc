@@ -116,7 +116,7 @@ bool GEPExprArgs::runOnModule(Module& M) {
           ValueToValueMapTy ValueMap;
 
           for (Function::arg_iterator II = F->arg_begin(); NI != NewF->arg_end(); ++II, ++NI) {
-            ValueMap[II] = NI;
+            ValueMap[&*II] = &*NI;
             NI->setName(II->getName());
             NI->addAttr(F->getAttributes().getParamAttributes(II->getArgNo() + 1));
           }
@@ -128,7 +128,7 @@ bool GEPExprArgs::runOnModule(Module& M) {
           std::vector<Value*> fargs;
           for(Function::arg_iterator ai = NewF->arg_begin(), 
               ae= NewF->arg_end(); ai != ae; ++ai) {
-            fargs.push_back(ai);
+            fargs.push_back(&*ai);
           }
 
           NewF->setAttributes(NewF->getAttributes().addAttributes(
@@ -137,7 +137,7 @@ bool GEPExprArgs::runOnModule(Module& M) {
           SmallVector<Value*, 8> Ops(CI->op_begin()+1, CI->op_end());
           Instruction *InsertPoint;
           for (BasicBlock::iterator insrt = NewF->front().begin(); 
-               isa<AllocaInst>(InsertPoint = insrt); ++insrt) {;}
+               isa<AllocaInst>(InsertPoint = &*insrt); ++insrt) {;}
 
           NI = NewF->arg_begin();
           SmallVector<Value*, 8> Indices;

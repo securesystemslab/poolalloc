@@ -19,6 +19,7 @@
 #include "dsa/super_set.h"
 #include "dsa/AddressTakenAnalysis.h"
 #include "dsa/AllocatorIdentification.h"
+#include "dsa/FormatFunctions.h"
 
 #include "llvm/Pass.h"
 #include "llvm/IR/CallSite.h"
@@ -129,6 +130,12 @@ public:
     return I->second;
   }
 
+  virtual DSGraph *getDSGraphByPtr(const Function* F) const {
+	  std::map<const Function*, DSGraph*>::const_iterator I = DSInfo.find(F);
+	  assert(I != DSInfo.end() && "Function not in module!");
+	  return I->second;
+  }
+
   void setDSGraph(const Function& F, DSGraph* G) {
     DSInfo[&F] = G;
   }
@@ -188,6 +195,7 @@ public:
   ///
   virtual void getAnalysisUsage(AnalysisUsage &AU) const {
     AU.addRequired<AddressTakenAnalysis>();
+    AU.addRequired<FormatFunctions>();
     AU.setPreservesAll();
   }
 };
@@ -229,16 +237,20 @@ protected:
   // from the CallGraph.  This is useful while doing original BU,
   // but might be undesirable in other passes such as CBU/EQBU.
   bool filterCallees;
+
+  // Whether or not to inline DSGraphs for indirect calls using the information
+  // from the call graph.
+  bool InlineUsingCallGraph;
 public:
   static char ID;
   //Child constructor (CBU)
   BUDataStructures(char & CID, const char* name, const char* printname,
-      bool filter)
-    : DataStructures(CID, printname), debugname(name), filterCallees(filter) {}
+                   bool filter, bool inlineGraphs = false)
+      : DataStructures(CID, printname), debugname(name), filterCallees(filter), InlineUsingCallGraph(inlineGraphs) {}
   //main constructor
   BUDataStructures()
     : DataStructures(ID, "bu."), debugname("dsa-bu"),
-    filterCallees(true) {}
+      filterCallees(true), InlineUsingCallGraph(false) {}
   ~BUDataStructures() { releaseMemory(); }
 
   virtual bool runOnModule(Module &M);
@@ -396,6 +408,50 @@ public:
     :TDDataStructures(ID, "eqtd.", true)
   {}
   ~EQTDDataStructures();
+};
+
+/// SteensgaardsDataStructures - Analysis that computes a context-insensitive
+/// data structure graphs for the whole program.
+///
+class SteensgaardDataStructures : public DataStructures {
+  DSGraph * ResultGraph;
+  DataStructures * DS;
+  void ResolveFunctionCall(const Function *F, const DSCallSite &Call,
+                             DSNodeHandle &RetVal);
+  bool runOnModuleInternal(Module &M);
+
+public:
+  static char ID;
+  SteensgaardDataStructures() : 
+    DataStructures(ID, "steensgaard."),
+    ResultGraph(NULL) {}
+  ~SteensgaardDataStructures();
+  virtual bool runOnModule(Module &M);
+  virtual void releaseMemory();
+
+  virtual void getAnalysisUsage(AnalysisUsage &AU) const {
+    AU.addRequired<StdLibDataStructures>();
+    AU.setPreservesAll();
+  }
+  
+  /// getDSGraph - Return the data structure graph for the specified function.
+  ///
+  virtual DSGraph *getDSGraph(const Function &F) const {
+    return getResultGraph();
+  }
+  
+  virtual bool hasDSGraph(const Function &F) const {
+    return true;
+  }
+
+  /// getDSGraph - Return the data structure graph for the whole program.
+  ///
+  DSGraph *getResultGraph() const {
+    return ResultGraph;
+  }
+
+  void print(llvm::raw_ostream &O, const Module *M) const;
+
 };
 
 } // End llvm namespace

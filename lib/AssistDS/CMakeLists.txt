@@ -26,10 +26,7 @@ set(SOURCES
 # the Makefile-driven version functions.
 
 if( NOT WIN32 AND LLVM_ENABLE_PIC )
-  set(bsl ${BUILD_SHARED_LIBS})
-  set(BUILD_SHARED_LIBS ON)
-  add_llvm_library(AssistDS ${SOURCES})
-  set(BUILD_SHARED_LIBS ${bsl})
+  add_llvm_loadable_module(AssistDS ${SOURCES})
   set_property(TARGET AssistDS PROPERTY OUTPUT_NAME "AssistDS")
   set_property(TARGET AssistDS PROPERTY PREFIX "")
   set(AssistDS_STATIC_TARGET AssistDS_static)

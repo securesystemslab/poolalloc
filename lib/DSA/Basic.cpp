@@ -76,7 +76,7 @@ bool BasicDataStructures::runOnModule(Module &M) {
         }
       }
 
-      for (inst_iterator I = inst_begin(F), E = inst_end(F); I != E; ++I) {
+      for (inst_iterator I = inst_begin(&*F), E = inst_end(&*F); I != E; ++I) {
         G->getNodeForValue(&*I).mergeWith(Node);
       }
 

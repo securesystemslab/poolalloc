@@ -119,7 +119,7 @@ AllNodesHeuristic::findGlobalPoolNodes (DSNodeSet_t & Nodes) {
     //
     DSGraph::node_iterator ni = G->node_begin();
     for (; ni != G->node_end(); ++ni) {
-      DSNode * N = ni;
+      DSNode * N = &*ni;
       DSNode * GGN = NodeMap[N].getNode();
 
       assert (!GGN || GlobalNodes.count (GGN));
@@ -207,7 +207,7 @@ AllNodesHeuristic::getLocalPoolNodes (const Function & F, DSNodeList_t & Nodes) 
        I != E;
        ++I) {
     // Get the DSNode and, if applicable, its mirror in the globals graph
-    DSNode * N   = I;
+    DSNode * N  = &*I;
     DSNode * GGN = GlobalsGraphNodeMapping[N].getNode();
 
     //
